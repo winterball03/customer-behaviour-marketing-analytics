@@ -1,0 +1,346 @@
+---
+title: "Assignment 2 - Decision Tree Model"
+author: "Marketing 2"
+date: "19 June 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+required_packages <- c(
+  "tidyverse",
+  "caret",
+  "rpart",
+  "rpart.plot",
+  "pROC"
+)
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(pROC)
+```
+
+# 1. Introduction
+
+This R Markdown document presents the Decision Tree model used to predict customer recommendation behaviour for Gelugor Fashion Store. The target variable is `recommend_index`, where customers are classified as either `Recommend` or `Not_Recommend`. The `Not_Recommend` class is treated as the positive class because it represents loyalty-risk customers who may require targeted improvement actions.
+
+# 2. Load Dataset
+
+```{r load-data}
+final_ml_dataset <- read_csv("final_ml_dataset.csv")
+
+dim(final_ml_dataset)
+str(final_ml_dataset)
+head(final_ml_dataset)
+```
+
+## Target Distribution
+
+```{r target-distribution}
+table(final_ml_dataset$recommend_index)
+prop.table(table(final_ml_dataset$recommend_index))
+```
+
+# 3. Data Preparation for Modelling
+
+The target variable is converted into a factor with two classes: `Not_Recommend` and `Recommend`. Character variables are also converted into factors so that they can be used properly in the Decision Tree model.
+
+```{r data-preparation}
+dt_data <- final_ml_dataset %>%
+  mutate(
+    recommend_index = factor(
+      ifelse(recommend_index == 1, "Recommend", "Not_Recommend"),
+      levels = c("Not_Recommend", "Recommend")
+    )
+  ) %>%
+  mutate(
+    across(where(is.character), as.factor)
+  )
+
+str(dt_data$recommend_index)
+table(dt_data$recommend_index)
+prop.table(table(dt_data$recommend_index))
+```
+
+# 4. Train-Test Split
+
+The dataset is divided into 80% training data and 20% testing data. The training set is used to train the Decision Tree model, while the test set is used to evaluate model performance on unseen data.
+
+```{r train-test-split}
+set.seed(123)
+
+train_index <- createDataPartition(
+  dt_data$recommend_index,
+  p = 0.8,
+  list = FALSE
+)
+
+train_data <- dt_data[train_index, ]
+test_data  <- dt_data[-train_index, ]
+
+dim(train_data)
+dim(test_data)
+```
+
+# 5. Decision Tree Parameter Tuning
+
+A 10-fold cross-validation method is used to tune the Decision Tree model. The complexity parameter `cp` is tested from 0.001 to 0.05. The model is optimized based on ROC because AUC is useful for evaluating classification separability.
+
+```{r decision-tree-tuning}
+dt_control <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+dt_grid <- expand.grid(
+  cp = seq(0.001, 0.05, by = 0.001)
+)
+
+set.seed(123)
+
+dt_model <- train(
+  recommend_index ~ .,
+  data = train_data,
+  method = "rpart",
+  metric = "ROC",
+  trControl = dt_control,
+  tuneGrid = dt_grid
+)
+
+print(dt_model)
+dt_model$bestTune
+```
+
+## Tuning Plot
+
+```{r tuning-plot}
+plot(dt_model)
+```
+
+# 6. Final Decision Tree Plot
+
+The final Decision Tree is visualized to show the main decision rules used by the model to classify customers as `Recommend` or `Not_Recommend`.
+
+```{r tree-plot}
+png("DecisionTree_TreePlot.png", width = 1400, height = 900, res = 150)
+
+rpart.plot(
+  dt_model$finalModel,
+  type = 2,
+  extra = 104,
+  fallen.leaves = TRUE,
+  main = "Decision Tree for Predicting Customer Recommendation"
+)
+
+dev.off()
+
+knitr::include_graphics("DecisionTree_TreePlot.png")
+```
+
+# 7. Variable Importance
+
+Variable importance is calculated to identify the most influential predictors in the Decision Tree model.
+
+```{r variable-importance}
+dt_importance <- varImp(dt_model)$importance %>%
+  rownames_to_column("Feature") %>%
+  arrange(desc(Overall))
+
+head(dt_importance, 20)
+
+write_csv(dt_importance, "DecisionTree_VariableImportance.csv")
+```
+
+## Variable Importance Plot
+
+```{r variable-importance-plot}
+top_dt_importance <- dt_importance %>%
+  slice_max(order_by = Overall, n = 15)
+
+importance_plot <- ggplot(
+  top_dt_importance,
+  aes(x = reorder(Feature, Overall), y = Overall)
+) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 15 Important Features in Decision Tree",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal()
+
+importance_plot
+
+ggsave(
+  "DecisionTree_VariableImportance.png",
+  importance_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+# 8. Test Set Prediction
+
+The trained Decision Tree model is applied to the test set. Both predicted classes and predicted probabilities are generated.
+
+```{r prediction}
+dt_pred <- predict(dt_model, newdata = test_data)
+dt_prob <- predict(dt_model, newdata = test_data, type = "prob")
+
+head(dt_pred)
+head(dt_prob)
+```
+
+# 9. Confusion Matrix
+
+The confusion matrix is used to evaluate how many customers were correctly and incorrectly classified. The positive class is set as `Not_Recommend` because this group represents loyalty-risk customers.
+
+```{r confusion-matrix}
+dt_cm <- confusionMatrix(
+  data = dt_pred,
+  reference = test_data$recommend_index,
+  positive = "Not_Recommend"
+)
+
+print(dt_cm)
+```
+
+## Save Confusion Matrix Table
+
+```{r confusion-matrix-table}
+dt_cm_table <- as.data.frame(dt_cm$table)
+
+dt_cm_table
+
+write_csv(dt_cm_table, "DecisionTree_ConfusionMatrix_Table.csv")
+```
+
+## Confusion Matrix Heatmap
+
+```{r confusion-matrix-plot}
+cm_plot <- ggplot(dt_cm_table, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(
+      label = Freq,
+      colour = ifelse(Freq > max(Freq) / 2, "white", "black")
+    ),
+    size = 6
+  ) +
+  scale_colour_identity() +
+  scale_fill_gradient(
+    low = "#FEE8C8",
+    high = "#E6550D"
+  ) +
+  labs(
+    title = "Decision Tree Confusion Matrix",
+    x = "Actual Class",
+    y = "Predicted Class",
+    fill = "Freq"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13),
+    axis.text = element_text(size = 11)
+  )
+
+cm_plot
+
+ggsave(
+  "DecisionTree_ConfusionMatrix.png",
+  cm_plot,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+# 10. ROC Curve and AUC
+
+The ROC curve is plotted to evaluate the model's ability to separate `Not_Recommend` and `Recommend` customers. A higher AUC value indicates stronger classification performance.
+
+```{r roc-auc}
+dt_roc <- roc(
+  response = test_data$recommend_index,
+  predictor = dt_prob$Not_Recommend,
+  levels = c("Recommend", "Not_Recommend")
+)
+
+dt_auc <- auc(dt_roc)
+
+dt_auc
+```
+
+## ROC Curve Plot
+
+```{r roc-plot}
+png("DecisionTree_ROC.png", width = 1000, height = 800, res = 150)
+
+plot(
+  dt_roc,
+  main = paste("Decision Tree ROC Curve, AUC =", round(dt_auc, 3))
+)
+
+dev.off()
+
+knitr::include_graphics("DecisionTree_ROC.png")
+```
+
+# 11. Model Performance Metrics
+
+The model performance is summarized using Accuracy, Kappa, Balanced Accuracy, Recall, Specificity, Precision, F1-score and AUC. Since the business focus is identifying loyalty-risk customers, Recall for `Not_Recommend` and Balanced Accuracy are especially important.
+
+```{r performance-metrics}
+dt_metrics <- data.frame(
+  Model = "Decision Tree",
+  Accuracy = as.numeric(dt_cm$overall["Accuracy"]),
+  Kappa = as.numeric(dt_cm$overall["Kappa"]),
+  Balanced_Accuracy = as.numeric(dt_cm$byClass["Balanced Accuracy"]),
+  Recall_NotRecommend = as.numeric(dt_cm$byClass["Sensitivity"]),
+  Specificity_Recommend = as.numeric(dt_cm$byClass["Specificity"]),
+  Precision_NotRecommend = as.numeric(dt_cm$byClass["Pos Pred Value"]),
+  F1_NotRecommend = as.numeric(dt_cm$byClass["F1"]),
+  AUC = as.numeric(dt_auc),
+  Best_cp = dt_model$bestTune$cp
+)
+
+dt_metrics
+
+write_csv(dt_metrics, "DecisionTree_Metrics.csv")
+```
+
+# 12. Save Final Model
+
+The final Decision Tree model is saved as an RDS file so that it can be reused later for prediction or model deployment.
+
+```{r save-model}
+saveRDS(dt_model, "DecisionTree_Model.rds")
+```
+
+# 13. Conclusion
+
+The Decision Tree model was trained and evaluated to predict customer recommendation behaviour. The model provides both classification results and interpretable decision rules, making it useful for identifying customers who are unlikely to recommend a product. Since `Not_Recommend` customers represent loyalty-risk customers, this model can support Gelugor Fashion Store in identifying products, review patterns, and customer segments that require targeted improvement.
+

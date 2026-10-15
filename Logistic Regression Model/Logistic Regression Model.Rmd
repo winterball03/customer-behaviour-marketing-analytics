@@ -1,0 +1,372 @@
+---
+title: "Assignment 2 - Logistic Regression Model"
+author: "Marketing 2"
+date: "19 June 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.path = "figures/"
+)
+
+dir.create("figures", showWarnings = FALSE, recursive = TRUE)
+
+required_packages <- c(
+  "tidyverse",
+  "caret",
+  "pROC"
+)
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+library(tidyverse)
+library(dplyr)
+library(caret)
+library(pROC)
+```
+
+# 1. Introduction
+
+This R Markdown document presents the Logistic Regression model used to predict customer recommendation behaviour for Gelugor Fashion Store. The target variable is `recommend_index`, where customers are classified as either `Recommend` or `Not_Recommend`. The `Not_Recommend` class is treated as the positive class in the confusion matrix because it represents loyalty-risk customers who may require targeted improvement actions.
+
+# 2. Load Dataset
+
+```{r load-data}
+final_ml_dataset <- read_csv("final_ml_dataset.csv")
+
+dim(final_ml_dataset)
+str(final_ml_dataset)
+summary(final_ml_dataset)
+head(final_ml_dataset)
+```
+
+## Target Distribution Before Conversion
+
+```{r target-before-conversion}
+table(final_ml_dataset$recommend_index)
+prop.table(table(final_ml_dataset$recommend_index))
+```
+
+# 3. Convert Target Variable
+
+The target variable is converted from `0` and `1` into meaningful labels. A value of `0` represents `Not_Recommend`, while a value of `1` represents `Recommend`.
+
+```{r convert-target}
+final_ml_dataset$recommend_index <- factor(
+  as.character(final_ml_dataset$recommend_index),
+  levels = c("0", "1"),
+  labels = c("Not_Recommend", "Recommend")
+)
+
+table(final_ml_dataset$recommend_index)
+prop.table(table(final_ml_dataset$recommend_index))
+str(final_ml_dataset$recommend_index)
+```
+
+# 4. Data Type Preparation
+
+Character predictors are converted into factors so that they can be used properly in the Logistic Regression model.
+
+```{r data-type-preparation}
+final_ml_dataset <- final_ml_dataset %>%
+  mutate(
+    across(where(is.character), as.factor)
+  )
+
+str(final_ml_dataset)
+```
+
+# 5. Stratified Train-Test Split
+
+The dataset is split into 70% training data and 30% testing data using stratified sampling. This helps maintain the proportion of `Recommend` and `Not_Recommend` customers in both the training and testing sets.
+
+```{r train-test-split}
+set.seed(123)
+
+sample_index <- createDataPartition(
+  final_ml_dataset$recommend_index,
+  p = 0.7,
+  list = FALSE
+)
+
+train_data <- final_ml_dataset[sample_index, ]
+test_data  <- final_ml_dataset[-sample_index, ]
+
+dim(train_data)
+dim(test_data)
+
+table(train_data$recommend_index)
+table(test_data$recommend_index)
+```
+
+# 6. Build Logistic Regression Model
+
+Logistic Regression is used because the target variable is binary. The model estimates the probability that a customer belongs to the `Recommend` class.
+
+```{r build-logistic-model}
+logit_model <- glm(
+  recommend_index ~ .,
+  data = train_data,
+  family = binomial
+)
+
+summary(logit_model)
+```
+
+# 7. Predict Probabilities and Classes
+
+The model predicts the probability of a customer being classified as `Recommend`. A threshold of 0.5 is used to convert predicted probabilities into class labels.
+
+```{r prediction}
+pred_prob <- predict(
+  logit_model,
+  newdata = test_data,
+  type = "response"
+)
+
+head(pred_prob)
+
+pred_class <- ifelse(
+  pred_prob > 0.5,
+  "Recommend",
+  "Not_Recommend"
+)
+
+pred_class <- factor(
+  pred_class,
+  levels = c("Not_Recommend", "Recommend")
+)
+
+test_data$recommend_index <- factor(
+  test_data$recommend_index,
+  levels = c("Not_Recommend", "Recommend")
+)
+
+head(pred_class)
+```
+
+# 8. Confusion Matrix
+
+The confusion matrix evaluates how many customers were correctly and incorrectly classified. The positive class is set as `Not_Recommend` because this group represents loyalty-risk customers.
+
+```{r confusion-matrix}
+conf_matrix <- confusionMatrix(
+  data = pred_class,
+  reference = test_data$recommend_index,
+  positive = "Not_Recommend"
+)
+
+conf_matrix
+```
+
+## Key Classification Metrics
+
+```{r key-metrics}
+accuracy  <- conf_matrix$overall["Accuracy"]
+precision <- conf_matrix$byClass["Pos Pred Value"]
+recall    <- conf_matrix$byClass["Sensitivity"]
+
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+accuracy
+precision
+recall
+f1_score
+```
+
+## Save Confusion Matrix Table
+
+```{r save-confusion-matrix-table}
+logit_cm_table <- as.data.frame(conf_matrix$table)
+
+logit_cm_table
+
+write_csv(logit_cm_table, "LogisticRegression_ConfusionMatrix_Table.csv")
+```
+
+## Confusion Matrix Heatmap
+
+```{r confusion-matrix-plot}
+logit_cm_plot <- ggplot(logit_cm_table, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(
+      label = Freq,
+      colour = ifelse(Freq > max(Freq) / 2, "white", "black")
+    ),
+    size = 6
+  ) +
+  scale_colour_identity() +
+  scale_fill_gradient(
+    low = "#DEEBF7",
+    high = "#3182BD"
+  ) +
+  labs(
+    title = "Logistic Regression Confusion Matrix",
+    x = "Actual Class",
+    y = "Predicted Class",
+    fill = "Freq"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13),
+    axis.text = element_text(size = 11)
+  )
+
+logit_cm_plot
+
+ggsave(
+  "LogisticRegression_ConfusionMatrix.png",
+  logit_cm_plot,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+# 9. Feature Importance Using Coefficients
+
+The coefficients of the Logistic Regression model show the direction and strength of each predictor. Positive coefficients increase the probability of the `Recommend` class, while negative coefficients decrease it.
+
+```{r coefficients}
+logit_coef <- coef(logit_model)
+
+logit_coef
+```
+
+## Coefficient Table
+
+```{r coefficient-table}
+coef_table <- data.frame(
+  Feature = names(logit_coef),
+  Coefficient = as.numeric(logit_coef)
+) %>%
+  arrange(desc(abs(Coefficient)))
+
+coef_table
+
+write_csv(coef_table, "LogisticRegression_Coefficients.csv")
+```
+
+## Top Coefficient Plot
+
+```{r coefficient-plot}
+top_coef <- coef_table %>%
+  filter(Feature != "(Intercept)") %>%
+  slice_max(order_by = abs(Coefficient), n = 15)
+
+coef_plot <- ggplot(
+  top_coef,
+  aes(x = reorder(Feature, Coefficient), y = Coefficient)
+) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Top 15 Logistic Regression Coefficients",
+    x = "Feature",
+    y = "Coefficient"
+  ) +
+  theme_minimal()
+
+coef_plot
+
+ggsave(
+  "LogisticRegression_Coefficients.png",
+  coef_plot,
+  width = 8,
+  height = 5,
+  dpi = 300
+)
+```
+
+# 10. ROC Curve and AUC
+
+The ROC curve evaluates the model's ability to separate `Recommend` and `Not_Recommend` customers. A higher AUC value indicates stronger classification separability.
+
+```{r roc-auc}
+roc_logit <- roc(
+  response = test_data$recommend_index,
+  predictor = pred_prob,
+  levels = c("Not_Recommend", "Recommend"),
+  direction = "<"
+)
+
+auc_value <- auc(roc_logit)
+
+auc_value
+```
+
+## ROC Curve Plot
+
+```{r roc-plot}
+plot(
+  roc_logit,
+  col = "blue",
+  main = paste0(
+    "Logistic Regression ROC Curve (AUC = ",
+    round(auc_value, 3),
+    ")"
+  )
+)
+
+png("LogisticRegression_ROC.png", width = 1000, height = 800, res = 150)
+
+plot(
+  roc_logit,
+  col = "blue",
+  main = paste0(
+    "Logistic Regression ROC Curve (AUC = ",
+    round(auc_value, 3),
+    ")"
+  )
+)
+
+dev.off()
+```
+
+# 11. Save Logistic Regression Performance Metrics
+
+The model performance is summarized using Accuracy, Kappa, Balanced Accuracy, Recall, Specificity, Precision, F1-score and AUC. Since the business objective focuses on detecting loyalty-risk customers, Recall for `Not_Recommend` and Balanced Accuracy are important evaluation metrics.
+
+```{r save-metrics}
+logit_metrics <- data.frame(
+  Model = "Logistic Regression",
+  Accuracy = as.numeric(conf_matrix$overall["Accuracy"]),
+  Kappa = as.numeric(conf_matrix$overall["Kappa"]),
+  Balanced_Accuracy = as.numeric(conf_matrix$byClass["Balanced Accuracy"]),
+  Recall_NotRecommend = as.numeric(conf_matrix$byClass["Sensitivity"]),
+  Specificity_Recommend = as.numeric(conf_matrix$byClass["Specificity"]),
+  Precision_NotRecommend = as.numeric(conf_matrix$byClass["Pos Pred Value"]),
+  F1_NotRecommend = as.numeric(conf_matrix$byClass["F1"]),
+  AUC = as.numeric(auc_value)
+)
+
+logit_metrics
+
+write_csv(logit_metrics, "LogisticRegression_Metrics.csv")
+```
+
+# 12. Save Final Model
+
+The final Logistic Regression model is saved as an RDS file so that it can be reused later for prediction or model deployment.
+
+```{r save-model}
+saveRDS(logit_model, "LogisticRegression_Model.rds")
+```
+
+# 13. Conclusion
+
+The Logistic Regression model was developed to predict whether customers would recommend a clothing item. It is useful because it provides both classification results and interpretable coefficients. The model can identify how product, customer, rating, review engagement and review-text features influence the probability of recommendation. Since `Not_Recommend` customers represent loyalty-risk customers, the model is especially useful when it achieves strong Recall for `Not_Recommend`, Balanced Accuracy and AUC.

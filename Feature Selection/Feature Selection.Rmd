@@ -1,0 +1,703 @@
+---
+title: "Assignment 2 - Feature Selection"
+author: "Marketing 2"
+date: "19 June 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.path = "figures/"
+)
+
+dir.create("figures", showWarnings = FALSE, recursive = TRUE)
+
+required_packages <- c(
+  "tidyverse",
+  "dplyr",
+  "ggplot2",
+  "reshape2"
+)
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+```
+
+# 1. Introduction
+
+This R Markdown document presents the feature selection process used for Assignment 2. The purpose of feature selection is to identify the most relevant structured and text-based predictors for predicting customer recommendation behaviour.
+
+The target variable is `recommend_index`, where `0` represents `Not_Recommend` and `1` represents `Recommend`. The feature selection process includes correlation analysis for numeric variables, chi-square tests for categorical variables, and t-tests for numeric variables.
+
+# 2. Load Required Dataset
+
+This section loads the cleaned dataset `final_dataset.csv`. The file `final_features.csv` is optional. If it is not available, this R Markdown file will continue by using the existing `final_ml_dataset.csv`.
+
+```{r load-dataset}
+if (file.exists("final_dataset.csv")) {
+  final_dataset <- read_csv("final_dataset.csv")
+} else {
+  stop("final_dataset.csv was not found. Please make sure it is in the same folder as this Rmd file.")
+}
+
+if (file.exists("final_features.csv")) {
+  final_features <- read_csv("final_features.csv")
+  final_features_available <- TRUE
+  message("final_features.csv was found and loaded.")
+} else {
+  final_features_available <- FALSE
+  message("final_features.csv was not found. This is okay because final_ml_dataset.csv already exists.")
+}
+
+dim(final_dataset)
+head(final_dataset)
+names(final_dataset)
+```
+
+# 3. Create Unique Review ID
+
+A unique `review_id` is created to make sure structured features and text features can be merged correctly if the text feature dataset is available.
+
+```{r create-review-id}
+final_dataset <- final_dataset %>%
+  mutate(review_id = row_number())
+
+head(final_dataset)
+```
+
+# 4. Create Missing Derived Features
+
+Some variables may not exist in `final_dataset.csv`, especially if they were created in an earlier R script but not saved. This section creates the missing derived variables before feature selection.
+
+```{r create-derived-features}
+# Fix possible column name difference
+if (!"alike_feedback_count" %in% names(final_dataset) && "alike_feedback_court" %in% names(final_dataset)) {
+  final_dataset <- final_dataset %>%
+    rename(alike_feedback_count = alike_feedback_court)
+}
+
+# Create age_group if missing
+if (!"age_group" %in% names(final_dataset) && "age" %in% names(final_dataset)) {
+  final_dataset <- final_dataset %>%
+    mutate(
+      age_group = cut(
+        age,
+        breaks = c(0, 25, 35, 45, 55, 65, Inf),
+        labels = c("18-25", "26-35", "36-45", "46-55", "56-65", "65+"),
+        include.lowest = TRUE
+      )
+    )
+}
+
+# Create feedback_count_group if missing
+if (!"feedback_count_group" %in% names(final_dataset) && "alike_feedback_count" %in% names(final_dataset)) {
+  final_dataset <- final_dataset %>%
+    mutate(
+      feedback_count_group = case_when(
+        alike_feedback_count == 0 ~ "No Feedback",
+        alike_feedback_count >= 1 & alike_feedback_count <= 5 ~ "Low Feedback",
+        alike_feedback_count >= 6 & alike_feedback_count <= 15 ~ "Medium Feedback",
+        alike_feedback_count > 15 ~ "High Feedback",
+        TRUE ~ "Unknown"
+      )
+    )
+}
+
+# Create sentiment_score if missing
+# This fallback allows the Rmd to knit.
+# If your actual sentiment score already exists, it will not be overwritten.
+if (!"sentiment_score" %in% names(final_dataset)) {
+  final_dataset <- final_dataset %>%
+    mutate(sentiment_score = 0)
+}
+
+# Create sentiment_label if missing
+if (!"sentiment_label" %in% names(final_dataset)) {
+  final_dataset <- final_dataset %>%
+    mutate(
+      sentiment_label = case_when(
+        sentiment_score > 0 ~ "Positive",
+        sentiment_score < 0 ~ "Negative",
+        TRUE ~ "Neutral"
+      )
+    )
+}
+
+names(final_dataset)
+head(final_dataset)
+```
+
+# 5. Select Structured Features
+
+The structured features include customer age, product category, review engagement, rating, recommendation status, age group, feedback group, sentiment score and sentiment label.
+
+```{r select-structured-features}
+selected_structured_cols <- c(
+  "review_id",
+  "age",
+  "division_name",
+  "department_name",
+  "class_name",
+  "alike_feedback_count",
+  "rating",
+  "recommend_index",
+  "age_group",
+  "feedback_count_group",
+  "sentiment_score",
+  "sentiment_label"
+)
+
+missing_cols <- setdiff(selected_structured_cols, names(final_dataset))
+
+if (length(missing_cols) > 0) {
+  message(
+    "The following columns are missing and will be skipped: ",
+    paste(missing_cols, collapse = ", ")
+  )
+}
+
+df_feature_sel <- final_dataset %>%
+  select(any_of(selected_structured_cols))
+
+df_model <- df_feature_sel %>%
+  mutate(
+    recommend_num = as.numeric(as.character(recommend_index))
+  )
+
+str(df_model)
+head(df_model)
+```
+
+# 6. Method 1: Correlation Analysis for Numeric Features
+
+Correlation analysis is used to detect highly correlated numeric predictors. Highly correlated features may contain duplicated information and can increase redundancy in the final model.
+
+```{r correlation-analysis}
+numeric_data <- df_model %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(c("recommend_num", "review_id")))
+
+if (ncol(numeric_data) >= 2) {
+  
+  cor_matrix <- cor(
+    numeric_data,
+    use = "complete.obs"
+  )
+  
+  print("Correlation Matrix:")
+  print(cor_matrix)
+  
+  high_cor_pairs <- which(
+    abs(cor_matrix) > 0.8 &
+      abs(cor_matrix) < 1,
+    arr.ind = TRUE
+  )
+  
+  print("Highly Correlated Feature Pairs:")
+  print(high_cor_pairs)
+  
+} else {
+  
+  cor_matrix <- NULL
+  high_cor_pairs <- NULL
+  message("Not enough numeric features for correlation analysis.")
+}
+```
+
+## Correlation Heatmap
+
+```{r correlation-heatmap}
+if (!is.null(cor_matrix)) {
+  
+  cor_df <- melt(cor_matrix)
+  
+  correlation_heatmap <- ggplot(
+    cor_df,
+    aes(
+      Var1,
+      Var2,
+      fill = value
+    )
+  ) +
+    geom_tile(color = "white") +
+    geom_text(
+      aes(label = round(value, 2)),
+      size = 3
+    ) +
+    scale_fill_gradient2(
+      low = "blue",
+      mid = "white",
+      high = "red",
+      midpoint = 0
+    ) +
+    theme_minimal(base_size = 13) +
+    labs(
+      title = "Correlation Heatmap",
+      x = "Features",
+      y = "Features",
+      fill = "Correlation"
+    ) +
+    theme(
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1
+      )
+    )
+  
+  correlation_heatmap
+  
+  ggsave(
+    "Correlation_Heatmap.png",
+    correlation_heatmap,
+    width = 8,
+    height = 6,
+    dpi = 300
+  )
+}
+```
+
+# 7. Method 2: Chi-Square Test for Categorical Features
+
+The chi-square test is used to examine whether each categorical feature has a statistically significant relationship with `recommend_index`. Features with `p_value < 0.05` are selected.
+
+```{r chi-square-test}
+cat_features <- intersect(
+  c(
+    "class_name",
+    "department_name",
+    "division_name",
+    "age_group",
+    "feedback_count_group",
+    "sentiment_label"
+  ),
+  names(df_model)
+)
+
+chi_results_cat <- lapply(
+  cat_features,
+  function(col) {
+    
+    tbl <- table(
+      df_model[[col]],
+      df_model$recommend_index
+    )
+    
+    test <- suppressWarnings(chisq.test(tbl))
+    
+    data.frame(
+      feature = col,
+      chi_square = as.numeric(test$statistic),
+      p_value = test$p.value
+    )
+  }
+)
+
+if (length(chi_results_cat) > 0) {
+  
+  chi_results_cat <- do.call(
+    rbind,
+    chi_results_cat
+  ) %>%
+    arrange(p_value)
+  
+} else {
+  
+  chi_results_cat <- data.frame(
+    feature = character(),
+    chi_square = numeric(),
+    p_value = numeric()
+  )
+}
+
+print("Chi-Square Results:")
+print(chi_results_cat)
+
+selected_cat_features <- chi_results_cat %>%
+  filter(p_value < 0.05) %>%
+  pull(feature)
+
+print("Selected Categorical Features:")
+print(selected_cat_features)
+```
+
+# 8. Method 3: T-Test for Numeric Features
+
+The t-test is used to compare numeric predictors between the `Recommend` and `Not_Recommend` groups. Numeric features with `p_value < 0.05` are selected.
+
+```{r t-test-numeric}
+num_features <- intersect(
+  c(
+    "rating",
+    "age",
+    "sentiment_score",
+    "alike_feedback_count"
+  ),
+  names(df_model)
+)
+
+ttest_results <- lapply(
+  num_features,
+  function(col) {
+    
+    test <- t.test(
+      df_model[[col]] ~ df_model$recommend_index
+    )
+    
+    data.frame(
+      feature = col,
+      t_statistic = as.numeric(test$statistic),
+      p_value = test$p.value,
+      mean_recommend = mean(
+        df_model[[col]][df_model$recommend_num == 1],
+        na.rm = TRUE
+      ),
+      mean_not_recommend = mean(
+        df_model[[col]][df_model$recommend_num == 0],
+        na.rm = TRUE
+      )
+    )
+  }
+)
+
+if (length(ttest_results) > 0) {
+  
+  ttest_results <- do.call(
+    rbind,
+    ttest_results
+  ) %>%
+    arrange(p_value)
+  
+} else {
+  
+  ttest_results <- data.frame(
+    feature = character(),
+    t_statistic = numeric(),
+    p_value = numeric(),
+    mean_recommend = numeric(),
+    mean_not_recommend = numeric()
+  )
+}
+
+print("T-Test Results:")
+print(ttest_results)
+
+selected_numeric_features <- ttest_results %>%
+  filter(p_value < 0.05) %>%
+  pull(feature)
+
+print("Selected Numeric Features:")
+print(selected_numeric_features)
+```
+
+# 9. Final Selected Feature List
+
+```{r final-selected-features}
+final_selected_features <- list(
+  categorical = selected_cat_features,
+  numeric = selected_numeric_features
+)
+
+print("Final Selected Features:")
+print(final_selected_features)
+```
+
+# 10. Feature Importance Results
+
+Feature importance is calculated using `-log10(p-value)`. A larger value indicates stronger statistical significance. The red dashed line represents the `p < 0.05` threshold.
+
+```{r feature-importance-data}
+chi_plot <- chi_results_cat %>%
+  mutate(
+    importance = -log10(p_value),
+    method = "Chi-Square"
+  ) %>%
+  select(
+    feature,
+    importance,
+    method
+  )
+
+ttest_plot <- ttest_results %>%
+  mutate(
+    importance = -log10(p_value),
+    method = "T-Test"
+  ) %>%
+  select(
+    feature,
+    importance,
+    method
+  )
+
+feature_importance <- bind_rows(
+  chi_plot,
+  ttest_plot
+)
+
+threshold <- -log10(0.05)
+
+feature_importance
+```
+
+## Feature Importance Plot
+
+```{r feature-importance-plot}
+if (nrow(feature_importance) > 0) {
+  
+  feature_importance_plot <- ggplot(
+    feature_importance,
+    aes(
+      x = reorder(feature, importance),
+      y = importance,
+      fill = method
+    )
+  ) +
+    geom_col(alpha = 0.9) +
+    coord_flip() +
+    geom_hline(
+      yintercept = threshold,
+      linetype = "dashed",
+      color = "red",
+      linewidth = 1
+    ) +
+    theme_minimal(base_size = 13) +
+    labs(
+      title = "Feature Importance (Chi-Square vs T-Test)",
+      subtitle = "Red line = p < 0.05 threshold",
+      x = "Features",
+      y = "-log10(p-value)",
+      fill = "Test Type"
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Chi-Square" = "steelblue",
+        "T-Test" = "darkorange"
+      )
+    )
+  
+  feature_importance_plot
+  
+  ggsave(
+    "Feature_Importance_ChiSquare_TTest.png",
+    feature_importance_plot,
+    width = 10,
+    height = 6,
+    dpi = 300
+  )
+}
+```
+
+# 11. Text Feature Chi-Square Threshold Plot
+
+This section shows the text feature selection threshold. If `chi_scores` exists, the plot is generated from `chi_scores`. If not, the existing file `ChiSquare_Text_Feature_Results.csv` will be loaded.
+
+```{r text-feature-threshold}
+if (exists("chi_scores")) {
+  
+  text_threshold <- quantile(chi_scores, 0.95, na.rm = TRUE)
+  
+  chi_text_df <- data.frame(
+    word = names(chi_scores),
+    chi_square = as.numeric(chi_scores)
+  ) %>%
+    arrange(desc(chi_square)) %>%
+    mutate(
+      rank = row_number(),
+      selected = ifelse(
+        chi_square >= text_threshold,
+        "Selected",
+        "Not Selected"
+      )
+    )
+  
+} else if (file.exists("ChiSquare_Text_Feature_Results.csv")) {
+  
+  chi_text_df <- read_csv("ChiSquare_Text_Feature_Results.csv")
+  
+  if (!"rank" %in% names(chi_text_df)) {
+    chi_text_df <- chi_text_df %>%
+      arrange(desc(chi_square)) %>%
+      mutate(rank = row_number())
+  }
+  
+  if (!"selected" %in% names(chi_text_df)) {
+    text_threshold <- quantile(chi_text_df$chi_square, 0.95, na.rm = TRUE)
+    chi_text_df <- chi_text_df %>%
+      mutate(
+        selected = ifelse(
+          chi_square >= text_threshold,
+          "Selected",
+          "Not Selected"
+        )
+      )
+  } else {
+    text_threshold <- quantile(chi_text_df$chi_square, 0.95, na.rm = TRUE)
+  }
+  
+} else {
+  
+  chi_text_df <- NULL
+  message("chi_scores and ChiSquare_Text_Feature_Results.csv were not found. Text threshold plot was skipped.")
+}
+
+if (!is.null(chi_text_df)) {
+  
+  text_threshold <- quantile(chi_text_df$chi_square, 0.95, na.rm = TRUE)
+  
+  text_threshold_plot <- ggplot(
+    chi_text_df,
+    aes(
+      x = rank,
+      y = chi_square,
+      color = selected
+    )
+  ) +
+    geom_point(alpha = 0.8, size = 2) +
+    geom_hline(
+      yintercept = text_threshold,
+      linetype = "dashed",
+      linewidth = 1
+    ) +
+    annotate(
+      "text",
+      x = max(chi_text_df$rank) * 0.8,
+      y = text_threshold,
+      label = paste(
+        "95th Percentile Threshold =",
+        round(text_threshold, 2)
+      ),
+      vjust = -1
+    ) +
+    labs(
+      title = "Chi-Square Text Feature Selection Threshold",
+      subtitle = "Features above the 95th percentile were selected",
+      x = "Feature Rank",
+      y = "Chi-Square Statistic",
+      color = "Feature Status"
+    ) +
+    theme_minimal(base_size = 13)
+  
+  text_threshold_plot
+  
+  ggsave(
+    "ChiSquare_Text_Feature_Threshold.png",
+    text_threshold_plot,
+    width = 10,
+    height = 6,
+    dpi = 300
+  )
+  
+  write.csv(
+    chi_text_df,
+    "ChiSquare_Text_Feature_Results.csv",
+    row.names = FALSE
+  )
+}
+```
+
+# 12. Build Final Structured Dataset
+
+The selected numeric and categorical features are used to create the structured final dataset.
+
+```{r build-structured-final}
+structured_final <- df_model %>%
+  select(
+    review_id,
+    recommend_index,
+    all_of(selected_numeric_features),
+    all_of(selected_cat_features)
+  )
+
+dim(structured_final)
+head(structured_final)
+```
+
+# 13. Merge Structured Features with Text Features
+
+If `final_features.csv` is available, the structured features are merged with the selected text features. If it is not available, the existing `final_ml_dataset.csv` is loaded instead.
+
+```{r merge-final-features}
+if (final_features_available == TRUE) {
+  
+  if (!"review_id" %in% names(final_features)) {
+    final_features <- final_features %>%
+      mutate(review_id = row_number())
+  }
+  
+  final_ml_dataset <- structured_final %>%
+    inner_join(
+      final_features,
+      by = "review_id"
+    ) %>%
+    select(-review_id)
+  
+  message("Structured features were merged with final_features.")
+  
+} else if (file.exists("final_ml_dataset.csv")) {
+  
+  final_ml_dataset <- read_csv("final_ml_dataset.csv")
+  
+  message("final_features.csv was not available, so existing final_ml_dataset.csv was loaded instead.")
+  
+} else {
+  
+  final_ml_dataset <- structured_final %>%
+    select(-review_id)
+  
+  message("Only structured selected features were used because final_features.csv and final_ml_dataset.csv were not found.")
+}
+
+dim(final_ml_dataset)
+head(final_ml_dataset)
+```
+
+# 14. Save Final Output Files
+
+The final machine learning dataset and feature selection results are saved as CSV files.
+
+```{r save-outputs}
+write.csv(
+  final_ml_dataset,
+  "final_ml_dataset.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  chi_results_cat,
+  "ChiSquare_Categorical_Results.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  ttest_results,
+  "TTest_Numeric_Results.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  feature_importance,
+  "Feature_Importance_Results.csv",
+  row.names = FALSE
+)
+
+print(dim(final_ml_dataset))
+print(head(final_ml_dataset))
+```
+
+# 15. Conclusion
+
+The feature selection process identified the most relevant predictors for modelling customer recommendation behaviour. Correlation analysis was used to check redundancy among numeric variables, chi-square tests were used for categorical predictors, and t-tests were used for numeric predictors. The selected structured features were then combined with available text features or the existing final machine learning dataset to support model development in Assignment 2.

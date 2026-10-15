@@ -1,0 +1,355 @@
+---
+title: "Assignment 2 - K-Nearest Neighbour Model"
+author: "Marketing 2"
+date: "19 June 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+required_packages <- c(
+  "tidyverse",
+  "caret",
+  "pROC"
+)
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+library(tidyverse)
+library(caret)
+library(pROC)
+```
+
+# 1. Introduction
+
+This R Markdown document presents the K-Nearest Neighbour model used to predict customer recommendation behaviour for Gelugor Fashion Store. The target variable is `recommend_index`, where customers are classified as either `Recommend` or `Not_Recommend`. The `Not_Recommend` class is treated as the positive class because it represents loyalty-risk customers who may require targeted improvement actions.
+
+# 2. Load Dataset
+
+```{r load-data}
+final_ml_dataset <- read_csv("final_ml_dataset.csv")
+
+dim(final_ml_dataset)
+str(final_ml_dataset)
+head(final_ml_dataset)
+```
+
+## Target Distribution
+
+```{r target-distribution}
+table(final_ml_dataset$recommend_index)
+prop.table(table(final_ml_dataset$recommend_index))
+```
+
+# 3. Data Preparation for KNN
+
+The target variable is converted into a factor with two classes: `Not_Recommend` and `Recommend`. Character predictors are converted into factors. Since KNN is distance-based, categorical predictors will later be converted into dummy variables.
+
+```{r data-preparation}
+knn_data <- final_ml_dataset %>%
+  mutate(
+    recommend_index = factor(
+      ifelse(recommend_index == 1, "Recommend", "Not_Recommend"),
+      levels = c("Not_Recommend", "Recommend")
+    ),
+    across(where(is.character), as.factor),
+    feedback_count_group = as.factor(feedback_count_group)
+  )
+
+table(knn_data$recommend_index)
+prop.table(table(knn_data$recommend_index))
+str(knn_data)
+```
+
+# 4. Train-Test Split
+
+The dataset is divided into 80% training data and 20% testing data using stratified sampling. This helps preserve the class distribution of `Recommend` and `Not_Recommend` in both datasets.
+
+```{r train-test-split}
+set.seed(123)
+
+train_index <- createDataPartition(
+  knn_data$recommend_index,
+  p = 0.8,
+  list = FALSE
+)
+
+knn_train_raw <- knn_data[train_index, ]
+knn_test_raw  <- knn_data[-train_index, ]
+
+dim(knn_train_raw)
+dim(knn_test_raw)
+
+table(knn_train_raw$recommend_index)
+table(knn_test_raw$recommend_index)
+```
+
+# 5. Dummy Encoding
+
+KNN requires numeric predictors because it calculates distance between observations. Therefore, categorical variables are converted into dummy variables using `dummyVars()`.
+
+```{r dummy-encoding}
+knn_train_predictors <- knn_train_raw %>%
+  select(-recommend_index)
+
+knn_test_predictors <- knn_test_raw %>%
+  select(-recommend_index)
+
+dummy_model <- dummyVars(
+  ~ .,
+  data = knn_train_predictors,
+  fullRank = TRUE
+)
+
+knn_train_x <- predict(dummy_model, newdata = knn_train_predictors) %>%
+  as.data.frame()
+
+knn_test_x <- predict(dummy_model, newdata = knn_test_predictors) %>%
+  as.data.frame()
+
+colnames(knn_train_x) <- make.names(colnames(knn_train_x), unique = TRUE)
+colnames(knn_test_x) <- make.names(colnames(knn_test_x), unique = TRUE)
+
+knn_train_y <- knn_train_raw$recommend_index
+knn_test_y  <- knn_test_raw$recommend_index
+
+dim(knn_train_x)
+dim(knn_test_x)
+```
+
+# 6. Remove Near-Zero Variance Features
+
+Near-zero variance features contain very little useful information and may reduce model stability. These features are removed before training the KNN model.
+
+```{r remove-nzv}
+nzv_cols <- nearZeroVar(knn_train_x)
+
+length(nzv_cols)
+
+if (length(nzv_cols) > 0) {
+  knn_train_x <- knn_train_x[, -nzv_cols, drop = FALSE]
+  knn_test_x  <- knn_test_x[, -nzv_cols, drop = FALSE]
+}
+
+dim(knn_train_x)
+dim(knn_test_x)
+```
+
+# 7. KNN Parameter Tuning
+
+A 10-fold cross-validation method is used to tune the KNN model. The number of neighbours, `k`, is tested from 3 to 101 using odd values. The model is optimized based on ROC. Range normalization is applied because KNN is sensitive to differences in variable scale.
+
+```{r knn-tuning}
+knn_control <- trainControl(
+  method = "cv",
+  number = 10,
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary,
+  savePredictions = "final"
+)
+
+knn_grid <- expand.grid(
+  k = seq(3, 101, by = 2)
+)
+
+set.seed(123)
+
+knn_model <- train(
+  x = knn_train_x,
+  y = knn_train_y,
+  method = "knn",
+  metric = "ROC",
+  trControl = knn_control,
+  tuneGrid = knn_grid,
+  preProcess = c("range")
+)
+
+print(knn_model)
+knn_model$bestTune
+```
+
+## KNN Tuning Plot
+
+```{r knn-tuning-plot}
+plot(knn_model)
+
+knn_tuning_plot <- ggplot(knn_model$results, aes(x = k, y = ROC)) +
+  geom_line() +
+  geom_point() +
+  labs(
+    title = "KNN Parameter Tuning Using 10-Fold Cross-Validation",
+    x = "Number of Neighbours (k)",
+    y = "ROC (Cross-Validation)"
+  ) +
+  theme_minimal()
+
+knn_tuning_plot
+
+ggsave(
+  "KNN_TuningPlot.png",
+  knn_tuning_plot,
+  width = 7,
+  height = 5,
+  dpi = 300
+)
+```
+
+# 8. Test Set Prediction
+
+The trained KNN model is applied to the test dataset. Both predicted classes and predicted probabilities are generated.
+
+```{r prediction}
+knn_pred <- predict(knn_model, newdata = knn_test_x)
+knn_prob <- predict(knn_model, newdata = knn_test_x, type = "prob")
+
+head(knn_pred)
+head(knn_prob)
+```
+
+# 9. Confusion Matrix
+
+The confusion matrix is used to evaluate how many customers were correctly and incorrectly classified. The positive class is set as `Not_Recommend` because this group represents loyalty-risk customers.
+
+```{r confusion-matrix}
+knn_cm <- confusionMatrix(
+  data = knn_pred,
+  reference = knn_test_y,
+  positive = "Not_Recommend"
+)
+
+print(knn_cm)
+```
+
+## Save Confusion Matrix Table
+
+```{r save-confusion-matrix}
+knn_cm_table <- as.data.frame(knn_cm$table)
+
+knn_cm_table
+
+write_csv(knn_cm_table, "KNN_ConfusionMatrix_Table.csv")
+```
+
+## Confusion Matrix Heatmap
+
+```{r confusion-matrix-plot}
+knn_cm_plot <- ggplot(knn_cm_table, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(
+      label = Freq,
+      colour = ifelse(Freq > max(Freq) / 2, "white", "black")
+    ),
+    size = 6
+  ) +
+  scale_colour_identity() +
+  scale_fill_gradient(
+    low = "#FEE8C8",
+    high = "#E6550D"
+  ) +
+  labs(
+    title = "KNN Confusion Matrix",
+    x = "Actual Class",
+    y = "Predicted Class",
+    fill = "Freq"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13),
+    axis.text = element_text(size = 11)
+  )
+
+knn_cm_plot
+
+ggsave(
+  "KNN_ConfusionMatrix.png",
+  knn_cm_plot,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+# 10. ROC Curve and AUC
+
+The ROC curve evaluates how well the KNN model separates `Not_Recommend` and `Recommend` customers. A higher AUC value indicates stronger classification separability.
+
+```{r roc-auc}
+knn_roc <- roc(
+  response = knn_test_y,
+  predictor = knn_prob$Not_Recommend,
+  levels = c("Recommend", "Not_Recommend")
+)
+
+knn_auc <- auc(knn_roc)
+
+knn_auc
+```
+
+## ROC Curve Plot
+
+```{r roc-plot}
+plot(
+  knn_roc,
+  main = paste("KNN ROC Curve, AUC =", round(knn_auc, 3))
+)
+
+png("KNN_ROC.png", width = 1000, height = 800, res = 150)
+
+plot(
+  knn_roc,
+  main = paste("KNN ROC Curve, AUC =", round(knn_auc, 3))
+)
+
+dev.off()
+```
+
+# 11. Save KNN Performance Metrics
+
+The model performance is summarized using Accuracy, Kappa, Balanced Accuracy, Recall, Specificity, Precision, F1-score and AUC. Since the business focus is identifying loyalty-risk customers, Recall for `Not_Recommend` and Balanced Accuracy are especially important.
+
+```{r save-metrics}
+knn_metrics <- data.frame(
+  Model = "K-Nearest Neighbour",
+  Accuracy = as.numeric(knn_cm$overall["Accuracy"]),
+  Kappa = as.numeric(knn_cm$overall["Kappa"]),
+  Balanced_Accuracy = as.numeric(knn_cm$byClass["Balanced Accuracy"]),
+  Recall_NotRecommend = as.numeric(knn_cm$byClass["Sensitivity"]),
+  Specificity_Recommend = as.numeric(knn_cm$byClass["Specificity"]),
+  Precision_NotRecommend = as.numeric(knn_cm$byClass["Pos Pred Value"]),
+  F1_NotRecommend = as.numeric(knn_cm$byClass["F1"]),
+  AUC = as.numeric(knn_auc),
+  Best_k = knn_model$bestTune$k,
+  Removed_NZV_Features = length(nzv_cols)
+)
+
+knn_metrics
+
+write_csv(knn_metrics, "KNN_Metrics.csv")
+```
+
+# 12. Save Final Model
+
+The final KNN model is saved as an RDS file so that it can be reused later for prediction or model deployment.
+
+```{r save-model}
+saveRDS(knn_model, "KNN_Model.rds")
+```
+
+# 13. Conclusion
+
+The K-Nearest Neighbour model was developed to predict whether customers would recommend a clothing item. KNN is useful as a distance-based classification model, but its performance depends strongly on scaling, dummy encoding and the selected value of `k`. The final model should be evaluated based on Accuracy, Balanced Accuracy, Recall for `Not_Recommend`, Precision, F1-score and AUC. Since `Not_Recommend` customers represent loyalty-risk customers, the model is especially useful only if it can correctly detect this class.

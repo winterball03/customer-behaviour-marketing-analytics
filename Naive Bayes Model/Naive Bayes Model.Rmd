@@ -1,0 +1,335 @@
+---
+title: "Assignment 2 - Naive Bayes Model"
+author: "Marketing 2"
+date: "19 June 2026"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+
+required_packages <- c(
+  "tidyverse",
+  "caret",
+  "e1071",
+  "pROC"
+)
+
+new_packages <- required_packages[!(required_packages %in% installed.packages()[, "Package"])]
+
+if (length(new_packages) > 0) {
+  install.packages(new_packages)
+}
+
+library(tidyverse)
+library(caret)
+library(e1071)
+library(pROC)
+```
+
+# 1. Introduction
+
+This R Markdown document presents the Naive Bayes classification model used to predict customer recommendation behaviour for Gelugor Fashion Store. The target variable is `recommend_index`, where customers are classified as either `Recommend` or `Not_Recommend`. The `Not_Recommend` class is treated as the positive class in the confusion matrix because it represents loyalty-risk customers who may require targeted business improvement actions.
+
+# 2. Load Dataset
+
+```{r load-data}
+final_ml_dataset <- read_csv("final_ml_dataset.csv")
+
+dim(final_ml_dataset)
+str(final_ml_dataset)
+head(final_ml_dataset)
+```
+
+## Target Distribution
+
+```{r target-distribution}
+table(final_ml_dataset$recommend_index)
+prop.table(table(final_ml_dataset$recommend_index))
+```
+
+# 3. Data Preparation
+
+The target variable is converted into a factor with two levels: `Not_Recommend` and `Recommend`. Character variables are also converted into factors before dummy encoding.
+
+```{r data-preparation}
+nb_data <- final_ml_dataset %>%
+  mutate(
+    recommend_index = factor(
+      as.character(recommend_index),
+      levels = c("0", "1"),
+      labels = c("Not_Recommend", "Recommend")
+    ),
+    across(where(is.character), as.factor)
+  )
+
+table(nb_data$recommend_index)
+prop.table(table(nb_data$recommend_index))
+str(nb_data)
+```
+
+# 4. Stratified Train-Test Split
+
+The dataset is split into 70% training data and 30% testing data using stratified sampling. This helps preserve the proportion of `Recommend` and `Not_Recommend` classes in both datasets.
+
+```{r train-test-split}
+set.seed(123)
+
+train_index <- createDataPartition(
+  nb_data$recommend_index,
+  p = 0.7,
+  list = FALSE
+)
+
+nb_train <- nb_data[train_index, ]
+nb_test  <- nb_data[-train_index, ]
+
+dim(nb_train)
+dim(nb_test)
+
+table(nb_train$recommend_index)
+table(nb_test$recommend_index)
+```
+
+# 5. Dummy Encoding
+
+Naive Bayes requires predictors to be in a suitable numeric format. Therefore, categorical predictors are transformed into dummy variables using `dummyVars()`.
+
+```{r dummy-encoding}
+nb_train_x_raw <- nb_train %>%
+  select(-recommend_index)
+
+nb_test_x_raw <- nb_test %>%
+  select(-recommend_index)
+
+dummy_model <- dummyVars(
+  ~ .,
+  data = nb_train_x_raw,
+  fullRank = TRUE
+)
+
+nb_train_x <- predict(dummy_model, nb_train_x_raw) %>%
+  as.data.frame()
+
+nb_test_x <- predict(dummy_model, nb_test_x_raw) %>%
+  as.data.frame()
+
+nb_train_y <- nb_train$recommend_index
+nb_test_y <- nb_test$recommend_index
+
+colnames(nb_train_x) <- make.names(colnames(nb_train_x), unique = TRUE)
+colnames(nb_test_x) <- make.names(colnames(nb_test_x), unique = TRUE)
+
+dim(nb_train_x)
+dim(nb_test_x)
+```
+
+# 6. Remove Near-Zero Variance Features
+
+Near-zero variance features provide very little useful information to the model. These features are removed to improve model stability and reduce unnecessary predictors.
+
+```{r remove-nzv}
+nzv_cols <- nearZeroVar(nb_train_x)
+
+length(nzv_cols)
+
+if (length(nzv_cols) > 0) {
+  nb_train_x <- nb_train_x[, -nzv_cols]
+  nb_test_x <- nb_test_x[, -nzv_cols]
+}
+
+dim(nb_train_x)
+dim(nb_test_x)
+```
+
+# 7. Train Naive Bayes Model
+
+The Naive Bayes model is trained using the processed training dataset. This model estimates class probabilities based on the relationship between predictor features and the target class.
+
+```{r train-naive-bayes}
+nb_model <- naiveBayes(
+  x = nb_train_x,
+  y = nb_train_y
+)
+
+print(nb_model)
+```
+
+# 8. Test Set Prediction
+
+The trained Naive Bayes model is applied to the test dataset. Both predicted classes and predicted probabilities are generated.
+
+```{r prediction}
+nb_pred <- predict(nb_model, newdata = nb_test_x)
+nb_prob <- predict(nb_model, newdata = nb_test_x, type = "raw")
+
+head(nb_pred)
+head(nb_prob)
+```
+
+# 9. Confusion Matrix
+
+The confusion matrix evaluates how many customers were correctly and incorrectly classified. The positive class is set as `Not_Recommend` because this group represents loyalty-risk customers.
+
+```{r confusion-matrix}
+nb_cm <- confusionMatrix(
+  data = nb_pred,
+  reference = nb_test_y,
+  positive = "Not_Recommend"
+)
+
+print(nb_cm)
+```
+
+## Key Classification Metrics
+
+```{r key-metrics}
+accuracy <- nb_cm$overall["Accuracy"]
+precision <- nb_cm$byClass["Pos Pred Value"]
+recall <- nb_cm$byClass["Sensitivity"]
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+accuracy
+precision
+recall
+f1_score
+```
+
+## Save Confusion Matrix Table
+
+```{r save-confusion-matrix}
+nb_cm_table <- as.data.frame(nb_cm$table)
+
+nb_cm_table
+
+write_csv(nb_cm_table, "NB_ConfusionMatrix_Table.csv")
+```
+
+## Confusion Matrix Heatmap
+
+```{r confusion-matrix-plot}
+nb_cm_plot <- ggplot(nb_cm_table, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(color = "white", linewidth = 0.5) +
+  geom_text(
+    aes(
+      label = Freq,
+      colour = ifelse(Freq > max(Freq) / 2, "white", "black")
+    ),
+    size = 6
+  ) +
+  scale_colour_identity() +
+  scale_fill_gradient(
+    low = "#DEEBF7",
+    high = "#3182BD"
+  ) +
+  labs(
+    title = "Naive Bayes Confusion Matrix",
+    x = "Actual Class",
+    y = "Predicted Class",
+    fill = "Freq"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    axis.title = element_text(size = 13),
+    axis.text = element_text(size = 11)
+  )
+
+nb_cm_plot
+
+ggsave(
+  "NB_ConfusionMatrix.png",
+  nb_cm_plot,
+  width = 6,
+  height = 5,
+  dpi = 300
+)
+```
+
+# 10. ROC Curve and AUC
+
+The ROC curve evaluates how well the Naive Bayes model separates `Recommend` and `Not_Recommend` customers. This plot uses the probability of the `Recommend` class to match the Logistic Regression ROC plot style.
+
+```{r roc-auc}
+roc_nb <- roc(
+  response = nb_test_y,
+  predictor = nb_prob[, "Recommend"],
+  levels = c("Not_Recommend", "Recommend"),
+  direction = "<"
+)
+
+auc_value <- auc(roc_nb)
+
+auc_value
+```
+
+## ROC Curve Plot
+
+```{r roc-plot}
+plot(
+  roc_nb,
+  col = "blue",
+  main = paste0(
+    "Naive Bayes ROC Curve (AUC = ",
+    round(auc_value, 3),
+    ")"
+  )
+)
+
+png("NB_ROC.png", width = 1000, height = 800, res = 150)
+
+plot(
+  roc_nb,
+  col = "blue",
+  main = paste0(
+    "Naive Bayes ROC Curve (AUC = ",
+    round(auc_value, 3),
+    ")"
+  )
+)
+
+dev.off()
+```
+
+# 11. Save Model Performance Metrics
+
+The final model performance is summarized using Accuracy, Kappa, Balanced Accuracy, Recall, Specificity, Precision, F1-score and AUC. Since the business focus is identifying loyalty-risk customers, Recall for `Not_Recommend` and Balanced Accuracy are important evaluation metrics.
+
+```{r save-metrics}
+nb_metrics <- data.frame(
+  Model = "Naive Bayes",
+  Accuracy = as.numeric(nb_cm$overall["Accuracy"]),
+  Kappa = as.numeric(nb_cm$overall["Kappa"]),
+  Balanced_Accuracy = as.numeric(nb_cm$byClass["Balanced Accuracy"]),
+  Recall_NotRecommend = as.numeric(nb_cm$byClass["Sensitivity"]),
+  Specificity_Recommend = as.numeric(nb_cm$byClass["Specificity"]),
+  Precision_NotRecommend = as.numeric(nb_cm$byClass["Pos Pred Value"]),
+  F1_NotRecommend = as.numeric(nb_cm$byClass["F1"]),
+  AUC = as.numeric(auc_value),
+  Removed_NZV_Features = length(nzv_cols)
+)
+
+nb_metrics
+
+write_csv(nb_metrics, "NB_Metrics.csv")
+```
+
+# 12. Save Final Model
+
+The trained Naive Bayes model is saved as an RDS file so that it can be reused later for prediction or model deployment.
+
+```{r save-model}
+saveRDS(nb_model, "NB_Model.rds")
+```
+
+# 13. Conclusion
+
+The Naive Bayes model was developed to predict whether customers would recommend a clothing item. It is a useful baseline classification model because it is simple, fast and able to generate class probabilities. However, its final suitability should be judged based on the model evaluation metrics, especially Recall for `Not_Recommend`, Balanced Accuracy and AUC. These metrics show how effectively the model identifies loyalty-risk customers and separates recommendation classes.
