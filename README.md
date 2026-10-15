@@ -21,7 +21,7 @@ The project combines exploratory data analysis, sentiment analysis, statistical 
 
 ## 🖥️ Live Application
 
-![R Shiny Marketing Analytics Dashboard](screenshots/shiny-dashboard.png)
+![R Shiny Marketing Analytics Dashboard](screenshots/Dashboard.png)
 
 ### [🚀 Explore the Live Dashboard](https://marketing-2-cds501.shinyapps.io/marketing-app/)
 
